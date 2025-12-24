@@ -1,0 +1,382 @@
+import streamlit as st
+import json
+import pandas as pd
+from datetime import datetime
+from collections import defaultdict
+
+from src.data.parser import ParserInteligente
+from src.core.optimizer import OptimizadorReal
+from src.core.models import HorarioCrudo, ClaseConDia
+
+# Configuración de página
+st.set_page_config(page_title="Generador de Horarios - Asistente Universitario", layout="wide", page_icon="📅")
+
+# Inyectar CSS para estética Premium (Adaptativo Modo Claro/Oscuro)
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
+
+    /* Variables adaptativas basadas en el tema de Streamlit */
+    :root {
+        --card-bg: var(--background-color);
+        --card-border: rgba(128, 128, 128, 0.2);
+    }
+
+    html, body, [class*="css"] {
+        font-family: 'Outfit', sans-serif;
+    }
+    
+    .main-header {
+        font-size: 2.5rem;
+        color: #2563EB; /* Azul corporativo se mantiene bien en ambos */
+        font-weight: 800;
+        letter-spacing: -0.025em;
+        margin-bottom: 0.2rem;
+    }
+    .sub-header {
+        color: var(--text-color);
+        opacity: 0.7;
+        font-size: 1.1rem;
+        font-weight: 400;
+        margin-bottom: 2rem;
+    }
+    .card {
+        background: var(--secondary-background-color);
+        padding: 1.2rem;
+        border-radius: 12px;
+        border: 1px solid var(--card-border);
+        margin-bottom: 1rem;
+        color: var(--text-color);
+    }
+    
+    .cat-title {
+        font-weight: 600;
+        font-size: 1rem;
+        margin-bottom: 0.8rem;
+    }
+
+    /* Colores de categorías adaptados para que sean legibles en ambos modos */
+    .cat-obligatorio { border-left: 6px solid #FDA4AF; padding-left: 15px; }
+    .cat-adelantar { border-left: 6px solid #FDE047; padding-left: 15px; }
+    .cat-electivo { border-left: 6px solid #86EFAC; padding-left: 15px; }
+
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+    }
+    
+    /* Ajustes para la tabla de horario en modo oscuro */
+    .schedule-grid {
+        background-color: var(--secondary-background-color) !important;
+        color: var(--text-color) !important;
+    }
+    .schedule-grid th {
+        background-color: #2563EB !important;
+    }
+    .schedule-grid td {
+        border: 1px solid var(--card-border) !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Inicializar estados y clases
+if 'parser' not in st.session_state:
+    st.session_state.parser = ParserInteligente()
+if 'optimizer' not in st.session_state:
+    st.session_state.optimizer = OptimizadorReal()
+if 'horarios_crudos' not in st.session_state:
+    st.session_state.horarios_crudos = []
+if 'selecciones' not in st.session_state:
+    st.session_state.selecciones = {}
+if 'mejores_horarios' not in st.session_state:
+    st.session_state.mejores_horarios = []
+if 'json_store' not in st.session_state:
+    st.session_state.json_store = {}
+if 'indice_horario' not in st.session_state:
+    st.session_state.indice_horario = 0
+
+# --- HEADER ---
+st.markdown('<h1 class="main-header">📅 Generador de Horarios</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Paso 1: Ingreso de Ramos por Categoría</p>', unsafe_allow_html=True)
+
+# --- NAVEGACIÓN POR TABS ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    " 1. Datos del Portal ", 
+    " 2. Datos Procesados ", 
+    " 3. Horario Optimizado ", 
+    " 4. Exportar ", 
+    " 5. Gestión JSON "
+])
+
+# --- TAB 1: DATOS DEL PORTAL ---
+with tab1:
+    st.markdown("### ⚙️ Preferencias de Horario")
+    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+    with col_p1: pref_no_temprano = st.checkbox("Priorizar entrar más tarde", value=True)
+    with col_p2: pref_no_tarde = st.checkbox("Priorizar salir más temprano", value=True)
+    with col_p3: pref_sin_ventanas = st.checkbox("Reducir ventanas", value=True)
+    with col_p4: pref_sin_sabados = st.checkbox("Evitar clases los Sábados", value=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown('<div class="card cat-obligatorio"><div class="cat-title">🌸 Ramos del Semestre (Obligatorios)</div></div>', unsafe_allow_html=True)
+        t0 = st.text_area("Pega aquí tus ramos del semestre", height=250, key="txt_cat0", label_visibility="collapsed")
+    
+    with col2:
+        st.markdown('<div class="card cat-adelantar"><div class="cat-title">☀️ Ramos para Adelantar (Opcionales)</div></div>', unsafe_allow_html=True)
+        t1 = st.text_area("Pega aquí ramos opcionales", height=250, key="txt_cat1", label_visibility="collapsed")
+    
+    with col3:
+        st.markdown('<div class="card cat-electivo"><div class="cat-title">🍀 Ramos Electivos (Se elige uno)</div></div>', unsafe_allow_html=True)
+        t2 = st.text_area("Pega aquí tus electivos", height=250, key="txt_cat2", label_visibility="collapsed")
+
+    col_btn1, col_btn2 = st.columns([1, 4])
+    with col_btn1:
+        if st.button("Limpiar Todo"):
+            st.rerun()
+    with col_btn2:
+        if st.button("Procesar Todo e ir a Paso 2 ➜", type="primary", use_container_width=True):
+            all_crudos = []
+            if t0.strip(): all_crudos.extend(st.session_state.parser.parsear_texto_por_prioridad(t0, 0))
+            if t1.strip(): all_crudos.extend(st.session_state.parser.parsear_texto_por_prioridad(t1, 1))
+            if t2.strip(): all_crudos.extend(st.session_state.parser.parsear_texto_por_prioridad(t2, 2))
+            
+            if all_crudos:
+                st.session_state.horarios_crudos = all_crudos
+                st.toast(f"Procesados {len(all_crudos)} bloques de horario.", icon="✅")
+                
+                # Sincronizar Almacén JSON
+                ramos_por_titulo = defaultdict(list)
+                for h in all_crudos:
+                    d = {"nrc": h.nrc, "tipo": h.tipo, "seccion": h.seccion, "hora": h.hora_str, "lugar": h.ubicacion}
+                    ramos_por_titulo[h.titulo].append(d)
+                for titulo, secciones in ramos_por_titulo.items():
+                    st.session_state.json_store[titulo] = {"titulo": titulo, "secciones": secciones}
+                
+                # Auto-detección para Paso 2
+                agrupados = st.session_state.parser.agrupar_por_nrc(all_crudos)
+                for nrc, horarios in agrupados.items():
+                    for idx, h in enumerate(horarios):
+                        dia = h.dia_parseado or st.session_state.parser.calcular_dia_de_fecha(h.fecha_inicio)
+                        if dia:
+                            st.session_state.selecciones[f"{nrc}_{idx}"] = {'dia': dia, 'horario': h, 'nrc_original': nrc}
+                st.info("Pasa a la pestaña '2. Datos Procesados'")
+            else:
+                st.error("No se detectaron datos válidos.")
+
+# --- TAB 2: DATOS PROCESADOS ---
+with tab2:
+    st.markdown("### 💡 CÓMO FUNCIONA EL OPTIMIZADOR")
+    st.info("Aquí debes asignar los días REALES a todos los cursos/secciones que te interesen. El Optimizador elegirá la mejor combinación automáticamente.")
+    
+    if not st.session_state.horarios_crudos:
+        st.warning("Primero ingresa los datos en el Paso 1.")
+    else:
+        agrupados = st.session_state.parser.agrupar_por_nrc(st.session_state.horarios_crudos)
+        
+        # Eliminar un NRC
+        def eliminar_ramo(nrc_to_del):
+            st.session_state.horarios_crudos = [h for h in st.session_state.horarios_crudos if h.nrc != nrc_to_del]
+            # Limpiar selecciones asociadas
+            claves_del = [k for k in st.session_state.selecciones.keys() if k.startswith(f"{nrc_to_del}_")]
+            for k in claves_del: del st.session_state.selecciones[k]
+            st.toast(f"NRC {nrc_to_del} eliminado", icon="🗑️")
+            st.rerun()
+
+        for nrc, horarios in agrupados.items():
+            p = horarios[0].prioridad
+            cat_class = "cat-obligatorio" if p == 0 else "cat-adelantar" if p == 1 else "cat-electivo"
+            
+            # Verificar si está configurado (todos los bloques tienen día)
+            configurado = True
+            for i in range(len(horarios)):
+                if f"{nrc}_{i}" not in st.session_state.selecciones:
+                    configurado = False
+                    break
+            
+            status_text = "✅ Listo" if configurado else "🔴 Pendiente"
+            status_color = "#10B981" if configurado else "#EF4444"
+
+            with st.container():
+                col_h, col_b = st.columns([5, 1])
+                with col_h:
+                    st.markdown(f'<div class="card {cat_class}"><b>{horarios[0].titulo}</b> (NRC: {nrc}) <span style="float:right; font-size:0.8rem; color:{status_color}; font-weight:bold;">{status_text}</span></div>', unsafe_allow_html=True)
+                with col_b:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("🗑️ Eliminar", key=f"del_{nrc}", help=f"Eliminar {horarios[0].titulo}", use_container_width=True):
+                        eliminar_ramo(nrc)
+
+                cols = st.columns(len(horarios))
+                for i, h in enumerate(horarios):
+                    with cols[i]:
+                        clave = f"{nrc}_{i}"
+                        current_dia = st.session_state.selecciones.get(clave, {}).get('dia', 'Seleccionar')
+                        # Auto-detección si no está en selecciones
+                        if current_dia == 'Seleccionar':
+                            dia_auto = h.dia_parseado or st.session_state.parser.calcular_dia_de_fecha(h.fecha_inicio)
+                            if dia_auto: current_dia = dia_auto
+                        
+                        nuevo_dia = st.selectbox(f"Asignar Día ({h.hora_str})", 
+                                               ['Seleccionar', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'],
+                                               index=['Seleccionar', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'].index(current_dia) if current_dia in ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'] else 0,
+                                               key=f"sel_{clave}")
+                        
+                        if nuevo_dia != 'Seleccionar':
+                            st.session_state.selecciones[clave] = {'dia': nuevo_dia, 'horario': h, 'nrc_original': nrc}
+                        elif clave in st.session_state.selecciones:
+                            # Si vuelve a 'Seleccionar', borrarlo
+                            del st.session_state.selecciones[clave]
+
+        st.markdown(f"**{len(st.session_state.selecciones)} de {len(st.session_state.horarios_crudos)} bloques configurados**")
+
+        if st.button("Optimizar Horario Automáticamente ➜", type="primary", use_container_width=True):
+            with st.spinner("Buscando la mejor combinación..."):
+                candidatos = st.session_state.optimizer.procesar_selecciones_usuario(st.session_state.selecciones)
+                prefs = {
+                    'no_temprano': pref_no_temprano, 'no_tarde': pref_no_tarde,
+                    'sin_ventanas': pref_sin_ventanas, 'sin_sabados': pref_sin_sabados
+                }
+                # Aumentamos top_n a 20 para dar más opciones al usuario
+                mejores, msg = st.session_state.optimizer.generar_top_horarios(candidatos, top_n=20, preferencias=prefs)
+                st.session_state.mejores_horarios = mejores
+                st.session_state.indice_horario = 0
+                if mejores:
+                    st.success(f"¡Horarios Generados! {msg}")
+                    st.toast("Optimización Exitosa")
+                else:
+                    st.error(msg)
+
+# --- TAB 3: HORARIO OPTIMIZADO ---
+with tab3:
+    if not st.session_state.mejores_horarios:
+        st.info("Completa el paso 2 para ver tu horario aquí.")
+    else:
+        st.markdown(f"### Paso 3: Tu Horario Semanal")
+        
+        horario_actual = st.session_state.mejores_horarios[st.session_state.indice_horario]
+        
+        col_nav1, col_nav2 = st.columns([2, 1])
+        with col_nav1:
+            st.markdown(f"**Viendo opción {st.session_state.indice_horario + 1} de {len(st.session_state.mejores_horarios)}**")
+        with col_nav2:
+            if st.button("🔄 Ver otra opción", use_container_width=True):
+                st.session_state.indice_horario = (st.session_state.indice_horario + 1) % len(st.session_state.mejores_horarios)
+                st.rerun()
+
+        col_main, col_sidebar = st.columns([3.5, 1])
+        
+        # --- GRILLA VISUAL ESTILO EXCEL ---
+        with col_main:
+            dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
+            horas = [f"{h:02d}:00" for h in range(8, 22)]
+            
+            # Mapa de colores para la grilla
+            colores_palette = ["#BFDBFE", "#BBF7D0", "#FEF3C7", "#FECACA", "#DDD6FE", "#F5D0FE", "#FED7AA", "#E9D5FF"]
+            nrc_colors = {}
+            for idx, h in enumerate(horario_actual):
+                if h.nrc not in nrc_colors:
+                    nrc_colors[h.nrc] = colores_palette[len(nrc_colors) % len(colores_palette)]
+
+            # Renderizar Grilla HTML
+            html_grid = f"""
+            <div style="overflow-x: auto;">
+                <table class="schedule-grid" style="width: 100%; border-collapse: collapse; font-family: 'Outfit', sans-serif; background: transparent;">
+                    <thead>
+                        <tr>
+                            <th style="padding: 8px; width: 60px;">Hora</th>
+                            {''.join([f'<th style="padding: 8px; min-width: 100px;">{d}</th>' for d in dias])}
+                        </tr>
+                    </thead>
+                    <tbody>
+            """
+            
+            for h_str in horas:
+                html_grid += f"<tr><td style='border: 1px solid #E2E8F0; padding: 8px; font-weight: 600; background: #F8FAFC; text-align: center;'>{h_str}</td>"
+                for d in dias:
+                    clase_en_slot = None
+                    h_num = int(h_str.split(':')[0])
+                    for c in horario_actual:
+                        if c.dia == d:
+                            c_h_ini = int(c.hora_inicio.split(':')[0])
+                            c_h_fin = int(c.hora_fin.split(':')[0])
+                            if c_h_ini <= h_num < c_h_fin + (1 if int(c.hora_fin.split(':')[1]) > 0 else 0):
+                                clase_en_slot = c
+                                break
+                    
+                    if clase_en_slot:
+                        color = nrc_colors.get(clase_en_slot.nrc, "#CBD5E1")
+                        html_grid += f"<td style='padding: 6px; background-color: {color}; color: #1E293B; vertical-align: top;'>"
+                        html_grid += f"<div style='font-weight: 700; line-height: 1.1;'>{clase_en_slot.titulo}</div>"
+                        html_grid += f"<div style='font-size: 0.7rem; margin-top: 2px;'>{clase_en_slot.nrc}</div>"
+                        html_grid += f"<div style='font-size: 0.7rem;'>{clase_en_slot.hora_inicio}-{clase_en_slot.hora_fin}</div>"
+                        html_grid += "</td>"
+                    else:
+                        html_grid += "<td></td>"
+                html_grid += "</tr>"
+            
+            html_grid += "</tbody></table></div>"
+            st.markdown(html_grid, unsafe_allow_html=True)
+
+        # --- LEYENDA DE RAMOS (SIDEBAR-LIKE) ---
+        with col_sidebar:
+            st.markdown("<div style='background: white; padding: 15px; border-radius: 10px; border: 1px solid #E2E8F0;'>", unsafe_allow_html=True)
+            st.markdown("#### Leyenda de Ramos")
+            
+            # Obtener ramos únicos en el horario actual
+            ramos_vistos = {}
+            for h in horario_actual:
+                if h.nrc not in ramos_vistos:
+                    ramos_vistos[h.nrc] = {'titulo': h.titulo, 'tipo': h.tipo}
+            
+            for nrc, info in ramos_vistos.items():
+                color = nrc_colors.get(nrc, "#CBD5E1")
+                st.markdown(f"""
+                <div style="display: flex; align-items: start; margin-bottom: 12px;">
+                    <div style="width: 15px; height: 15px; background: {color}; border-radius: 3px; margin-top: 4px; margin-right: 10px; flex-shrink: 0;"></div>
+                    <div>
+                        <div style="font-size: 0.85rem; font-weight: 600; line-height: 1.2;">{info['titulo']}</div>
+                        <div style="font-size: 0.75rem; color: #64748B;">{info['tipo']} | NRC: {nrc}</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Exportar ➜", type="secondary", use_container_width=True):
+                # Saltar a la pestaña 4 programáticamente no es fácil en tabs, 
+                # pero podemos poner un aviso o disparar la descarga aquí
+                st.toast("Dirígete a la pestaña 'Exportar' para descargar el Excel")
+
+# --- TAB 4: EXPORTAR ---
+with tab4:
+    if not st.session_state.mejores_horarios:
+        st.info("Genera un horario primero.")
+    else:
+        st.markdown("### Paso 4: Exportar Resultado")
+        st.write("Presiona el botón para generar y descargar tu horario en formato Excel (compatible con Google Sheets y Office).")
+        
+        filename = f"Horario_Opcion_{st.session_state.indice_horario + 1}.xlsx"
+        if st.button("Generar Archivo Excel", type="primary", use_container_width=True):
+            with st.spinner("Generando archivo..."):
+                from src.data.excel_exporter import ExcelExporter
+                ExcelExporter.exportar(st.session_state.mejores_horarios[st.session_state.indice_horario], filename)
+                with open(filename, "rb") as f:
+                    st.download_button("⬇️ DESCARGAR EXCEL AHORA", f, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+# --- TAB 5: GESTIÓN JSON ---
+with tab5:
+    st.markdown("### Paso 5: Almacén de Datos JSON")
+    st.info("Aquí puedes ver y respaldar los datos consolidados de todos tus ramos.")
+    if not st.session_state.json_store:
+        st.warning("No hay ramos guardados en la memoria actual.")
+    else:
+        for titulo, data in st.session_state.json_store.items():
+            with st.expander(f"📦 Asignatura: {titulo}"):
+                st.json(data)
+        
+        full_json = json.dumps(st.session_state.json_store, indent=4, ensure_ascii=False)
+        st.download_button("💾 Exportar Base de Datos Completa (JSON)", full_json, file_name="almacen_ramos_completo.json", mime="application/json")
