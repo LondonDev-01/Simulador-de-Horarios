@@ -1,15 +1,10 @@
-import streamlit as st
-import json
-import pandas as pd
-from datetime import datetime
-from collections import defaultdict
-
 from src.data.parser import ParserInteligente
 from src.core.optimizer import OptimizadorReal
 from src.core.models import HorarioCrudo, ClaseConDia
+from src.auth.manager import AuthManager
 
 # Configuración de página
-st.set_page_config(page_title="Generador de Horarios - Asistente Universitario", layout="wide", page_icon="📅")
+st.set_page_config(page_title="UniHorario USS - Optimizador Inteligente", layout="wide", page_icon="📅")
 
 # Inyectar CSS para estética Premium (Adaptativo Modo Claro/Oscuro)
 st.markdown("""
@@ -80,6 +75,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Inicializar estados y clases
+if 'auth' not in st.session_state:
+    st.session_state.auth = AuthManager()
 if 'parser' not in st.session_state:
     st.session_state.parser = ParserInteligente()
 if 'optimizer' not in st.session_state:
@@ -95,8 +92,50 @@ if 'json_store' not in st.session_state:
 if 'indice_horario' not in st.session_state:
     st.session_state.indice_horario = 0
 
-# --- HEADER ---
-st.markdown('<h1 class="main-header">📅 Generador de Horarios</h1>', unsafe_allow_html=True)
+# --- SISTEMA DE AUTENTICACIÓN ---
+def form_auth():
+    st.markdown('<h1 class="main-header">🔑 Acceso UniHorario USS</h1>', unsafe_allow_html=True)
+    
+    tab_login, tab_reg = st.tabs(["Inicia Sesión", "Crea una Cuenta"])
+    
+    with tab_login:
+        with st.form("login_form"):
+            u = st.text_input("Usuario")
+            p = st.text_input("Contraseña", type="password")
+            btn = st.form_submit_button("Entrar", use_container_width=True)
+            if btn:
+                success, msg = st.session_state.auth.login(u, p)
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+    
+    with tab_reg:
+        with st.form("reg_form"):
+            new_u = st.text_input("Elige un Usuario")
+            new_p = st.text_input("Elige una Contraseña", type="password")
+            reg_btn = st.form_submit_button("Registrarse", use_container_width=True)
+            if reg_btn:
+                ok, res = st.session_state.auth.register(new_u, new_p)
+                if ok:
+                    st.success(res)
+                else:
+                    st.error(res)
+
+if not st.session_state.auth.is_authenticated:
+    form_auth()
+    st.stop()
+
+# --- HEADER (LOGUEADO) ---
+cols = st.columns([1, 0.2])
+with cols[0]:
+    st.markdown('<h1 class="main-header">📅 Generador de Horarios</h1>', unsafe_allow_html=True)
+with cols[1]:
+    if st.button(f"👤 {st.session_state.auth.current_user} (Salir)"):
+        st.session_state.auth.logout()
+        st.rerun()
+
 st.markdown('<p class="sub-header">Paso 1: Ingreso de Ramos por Categoría</p>', unsafe_allow_html=True)
 
 # --- NAVEGACIÓN POR TABS ---

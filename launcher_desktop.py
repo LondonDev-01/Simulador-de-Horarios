@@ -10,20 +10,26 @@ from collections import defaultdict
 from src.data.parser import ParserInteligente
 from src.core.optimizer import OptimizadorReal
 from src.core.models import HorarioCrudo, ClaseConDia
+from src.auth.manager import AuthManager
 
 class HorarioAppCorregida:
     def __init__(self, root):
         self.root = root
-        self.root.title("📅 Generador de Horarios - Asistente Universitario")
+        self.root.title("📅 UniHorario USS - Optimizador Inteligente")
         self.root.geometry("1200x800")
         self.root.minsize(1000, 700)
-        
-        # Configuración de estilos y colores
-        self.setup_styles()
         
         # Componentes lógicos
         self.parser = ParserInteligente()
         self.optimizer = OptimizadorReal()
+        self.auth = AuthManager()
+        
+        # Configuración de estilos y colores
+        self.setup_styles()
+        
+        # Ocultar ventana principal hasta login
+        self.root.withdraw()
+        self.abrir_login()
         
         # Estado de la aplicación
         self.horarios_crudos = []  # Lista de HorarioCrudo (sin días)
@@ -55,6 +61,89 @@ class HorarioAppCorregida:
         """Manejar cierre seguro de la aplicación"""
         self.root.destroy()
     
+    def abrir_login(self):
+        """Diálogo de autenticación y registro"""
+        login_win = tk.Toplevel(self.root)
+        login_win.title("Acceso UniHorario USS")
+        login_win.geometry("400x500")
+        login_win.configure(bg=self.colors['bg_main'])
+        login_win.resizable(False, False)
+        
+        # Centrar
+        login_win.update_idletasks()
+        x = (login_win.winfo_screenwidth() // 2) - 200
+        y = (login_win.winfo_screenheight() // 2) - 250
+        login_win.geometry(f"+{x}+{y}")
+        
+        container = ttk.Frame(login_win, padding=30)
+        container.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(container, text="🔑 Inicio de Sesión", font=self.fonts['h1'], foreground=self.colors['primary']).pack(pady=(0,20))
+        
+        ttk.Label(container, text="Usuario").pack(anchor=tk.W)
+        user_var = tk.StringVar()
+        user_entry = ttk.Entry(container, textvariable=user_var, font=self.fonts['body'])
+        user_entry.pack(fill=tk.X, pady=(5,15))
+        
+        ttk.Label(container, text="Contraseña").pack(anchor=tk.W)
+        pass_var = tk.StringVar()
+        pass_entry = ttk.Entry(container, textvariable=pass_var, show="*", font=self.fonts['body'])
+        pass_entry.pack(fill=tk.X, pady=(5,25))
+        
+        def intentar_login():
+            user = user_var.get()
+            pwd = pass_var.get()
+            success, msg = self.auth.login(user, pwd)
+            if success:
+                messagebox.showinfo("Bienvenido", f"¡Hola {user}! Acceso concedido.")
+                login_win.destroy()
+                self.root.deiconify() # Mostrar app principal
+                self.actualizar_label_usuario()
+            else:
+                messagebox.showwarning("Acceso Denegado", msg)
+
+        def abrir_registro():
+            reg_win = tk.Toplevel(login_win)
+            reg_win.title("Registro de Usuario")
+            reg_win.geometry("350x400")
+            reg_win.transient(login_win)
+            reg_win.grab_set()
+            
+            reg_container = ttk.Frame(reg_win, padding=20)
+            reg_container.pack(fill=tk.BOTH, expand=True)
+            
+            ttk.Label(reg_container, text="📝 Crear Cuenta", font=self.fonts['h2']).pack(pady=(0,20))
+            
+            ttk.Label(reg_container, text="Nuevo Usuario").pack(anchor=tk.W)
+            r_user = tk.StringVar()
+            ttk.Entry(reg_container, textvariable=r_user).pack(fill=tk.X, pady=5)
+            
+            ttk.Label(reg_container, text="Contraseña").pack(anchor=tk.W)
+            r_pass = tk.StringVar()
+            ttk.Entry(reg_container, textvariable=r_pass, show="*").pack(fill=tk.X, pady=5)
+            
+            def ejecutar_registro():
+                u, p = r_user.get(), r_pass.get()
+                ok, res = self.auth.register(u, p)
+                if ok:
+                    messagebox.showinfo("Registrado", res)
+                    reg_win.destroy()
+                else:
+                    messagebox.showerror("Error", res)
+
+            ttk.Button(reg_container, text="Registrar Ahora", command=ejecutar_registro, style='Success.TButton').pack(pady=20, fill=tk.X)
+
+        ttk.Button(container, text="Entrar", command=intentar_login, style='Primary.TButton').pack(fill=tk.X, pady=5)
+        ttk.Button(container, text="No tengo cuenta (Registrar)", command=abrir_registro).pack(fill=tk.X, pady=5)
+        
+        # Si cierran la ventana de login, cerrar toda la app
+        login_win.protocol("WM_DELETE_WINDOW", lambda: self.root.destroy())
+
+    def actualizar_label_usuario(self):
+        """Muestra el usuario actual en la interfaz"""
+        if self.auth.current_user:
+            ttk.Label(self.root, text=f"👤 Sesión: {self.auth.current_user}", foreground=self.colors['secondary']).place(relx=0.98, rely=0.02, anchor=tk.NE)
+
     def setup_styles(self):
         """Configurar tema visual moderno y profesional"""
         self.style = ttk.Style()
